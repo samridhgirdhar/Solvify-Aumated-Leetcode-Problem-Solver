@@ -1,0 +1,33 @@
+name: LeetCode Daily Auto-Submit
+
+on:
+  schedule:
+    - cron: "5 0 * * *"   # Run daily at 00:05 UTC (adjust as needed)
+  workflow_dispatch:
+
+jobs:
+  submit-daily-challenge:
+    runs-on: ubuntu-latest
+    name: Submit LeetCode Daily Challenge
+    env:
+      # LeetCode session cookies stored as GitHub secrets (set these in repo settings)
+      LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
+      LEETCODE_CSRF: ${{ secrets.LEETCODE_CSRF }}
+    steps:
+      - name: Checkout repository (if you store script in the repo)
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"  # Use Node 16+ or 18+
+
+      - name: Install Playwright
+        run: |
+          npm install playwright@^1.35
+          # Install necessary browsers and dependencies for Playwright
+          npx playwright install-deps
+          npx playwright install
+
+      - name: Run LeetCode auto-submit script
+        run: node leetcode_submit.js  # Execute the Node.js script (adjust path if needed)
