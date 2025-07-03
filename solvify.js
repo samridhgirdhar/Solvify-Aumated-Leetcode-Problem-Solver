@@ -68,59 +68,67 @@ const playwright = require('playwright');
     const questionId = challenge.question.questionId;
     console.log(`🔎 Today's problem: ${challenge.question.title} (slug: ${problemSlug})`);
 
-    // 3. Retrieve an accepted C++ solution for the problem
+    // ---------------- 3️⃣  Fetch an accepted C++ solution ----------------
     let cppSolutionCode = null;
 
-    if (challenge.question.hasSolution) {
-      // Attempt to get official solution editorial page
-      console.log("📖 Official solution available. Attempting to fetch editorial...");
-      const solPage = await context.newPage();
-      await solPage.goto(`https://leetcode.com/problems/${problemSlug}/solution/`);
-      // Wait for content to load (the editorial may load code blocks asynchronously)
-      await solPage.waitForTimeout(3000);
-      // Check for code blocks in the page (especially for C++ code)
-      const codeBlocks = await solPage.$$('pre code');
-      for (const codeBlock of codeBlocks) {
-        const codeText = await codeBlock.innerText();
-        // Heuristic: consider it C++ if it has common C++ keywords or includes
-        if (codeText.includes('#include') || codeText.includes('std::') || codeText.includes('using namespace') ) {
-          cppSolutionCode = codeText;
-          break;
+    /* 3‑A. Official editorial (if you have access) */
+    try {
+    const editorial = await context.newPage();
+    await editorial.goto(`https://leetcode.com/problems/${problemSlug}/solution/`,
+                        { waitUntil: 'domcontentloaded' });
+    await editorial.waitForSelector('pre code', { timeout: 8000 });
+    for (const block of await editorial.$$('pre code')) {
+        const text = await block.innerText();
+        if (text.includes('#include') || /class\s+\w+\s*\{/.test(text)) {
+        cppSolutionCode = text;
+        break;
         }
-      }
-      await solPage.close();
+    }
+    await editorial.close();
+    } catch { /* fall through */ }
+
+    /* 3‑B. Community “Solutions” tab (2025 layout) */
+    if (!cppSolutionCode) {
+    console.log('📚 Searching Solutions tab …');
+    const solTab = await context.newPage();
+    const solURL =
+        `https://leetcode.com/problems/${problemSlug}/solutions/?orderBy=most_votes&languageTags=cpp`;
+    await solTab.goto(solURL, { waitUntil: 'domcontentloaded' });
+    await solTab.waitForSelector('pre code', { timeout: 15000 });
+    for (const block of await solTab.$$('pre code')) {
+        const text = await block.innerText();
+        if (text.includes('#include')) {
+        cppSolutionCode = text;
+        break;
+        }
+    }
+    await solTab.close();
+    }
+
+    /* 3‑C. Fallback: first post in Discuss */
+    if (!cppSolutionCode) {
+    console.log('💬 Falling back to Discuss …');
+    await page.goto(`https://leetcode.com/problems/${problemSlug}/discuss/?orderBy=most_votes`);
+    await page.waitForSelector('a[data-e2e-locator="post-title"]', { timeout: 12000 });
+    await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
+        (await page.$('a[data-e2e-locator="post-title"]')).click()
+    ]);
+    const blocks = await page.$$('pre code');
+    for (const block of blocks) {
+        const text = await block.innerText();
+        if (text.includes('#include')) {
+        cppSolutionCode = text;
+        break;
+        }
+    }
     }
 
     if (!cppSolutionCode) {
-      console.log("💬 Fetching top Discuss post for C++ solution...");
-      // Open Discuss tab sorted by most votes
-      await page.goto(`https://leetcode.com/problems/${problemSlug}/discuss/?orderBy=most_votes`);
-      // Wait for discuss posts to load
-      await page.waitForSelector('div[class*="discuss-list"]');
-      // Click the first post (most voted)
-      const firstPostLink = await page.$('a[href*="/discuss/"]:nth-of-type(1)');
-      if (!firstPostLink) throw new Error("Failed to find discuss posts.");
-      await Promise.all([
-        page.waitForNavigation(), 
-        firstPostLink.click()
-      ]);
-      // On the post page, extract the first C++ code block
-      const codeBlocks = await page.$$('pre code');
-      for (const codeBlock of codeBlocks) {
-        const codeText = await codeBlock.innerText();
-        // Identify C++ code by common patterns (to avoid picking up Python/Java)
-        if (codeText.includes('#include') || codeText.includes('std::') || codeText.includes(';')) {
-          cppSolutionCode = codeText;
-          break;
-        }
-      }
+    throw new Error('C++ solution not found in editorial, Solutions tab, or Discuss.');
     }
+    console.log('✅ C++ solution acquired.');
 
-    if (!cppSolutionCode) {
-      throw new Error("C++ solution not found in Solutions or Discuss.");
-    }
-
-    console.log("✅ Retrieved C++ solution. Submitting to LeetCode...");
 
     // 4. Submit the solution via LeetCode API
     const submitUrl = `https://leetcode.com/problems/${problemSlug}/submit/`;
