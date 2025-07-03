@@ -68,76 +68,72 @@ const playwright = require('playwright');
     const questionId = challenge.question.questionId;
     console.log(`🔎 Today's problem: ${challenge.question.title} (slug: ${problemSlug})`);
 
-    // ---------------- 3️⃣  Fetch an accepted C++ solution ----------------
+        // ---------------- 3️⃣  Fetch an accepted C++ solution ----------------
     let cppSolutionCode = null;
 
-    /* 3‑A. Official editorial */
+    /* 3-A. Official editorial (unchanged) */
     try {
-    const editorial = await context.newPage();
-    await editorial.goto(`https://leetcode.com/problems/${problemSlug}/solution/`,
-                        { waitUntil: 'domcontentloaded' });
-    const code = await editorial.$$eval('pre code', nodes =>
-        nodes.map(n => n.innerText).find(t => /#include/.test(t) || /std::/.test(t)));
-    if (code) cppSolutionCode = code;
-    await editorial.close();
+    const edt = await context.newPage();
+    await edt.goto(`https://leetcode.com/problems/${problemSlug}/solution/`, { waitUntil: 'domcontentloaded' });
+    cppSolutionCode = await edt.$$eval('pre code', cs =>
+        cs.map(c => c.innerText).find(t => /#include/.test(t))
+    );
+    await edt.close();
     } catch { /* ignore */ }
 
-    /* 3‑B. Community solutions via GraphQL (fast & headless) */
+    /* 3-B. GraphQL questionSolutions (new enum value CPP) */
     if (!cppSolutionCode) {
-    console.log('🔗 Querying questionSolutions GraphQL …');
-    const gqlQuery = `
-        query GetSolutions($slug: String!) {
-        questionSolutions(questionSlug: $slug, first: 5, orderBy: most_votes, languageTags: ["cpp"]) {
-            nodes { codeSnippet }
+    console.log('🔗 GraphQL: questionSolutions …');
+    const q = `
+        query GetSol($slug:String!){
+        questionSolutions(questionSlug:$slug,first:5,orderBy:most_votes,languageTags:[CPP]){
+            nodes{ code }
         }
         }`;
-    const resp = await page.request.post('https://leetcode.com/graphql', {
-        headers: { 'Content-Type': 'application/json' },
-        data: { query: gqlQuery, variables: { slug: problemSlug }, operationName: 'GetSolutions' }
+    const r = await page.request.post('https://leetcode.com/graphql', {
+        headers: { 'Content-Type':'application/json' },
+        data: { query: q, variables:{ slug: problemSlug }, operationName:'GetSol' }
     });
-    const solData = await resp.json();
-    const nodes = solData?.data?.questionSolutions?.nodes || [];
-    if (nodes.length && nodes[0].codeSnippet) {
-        cppSolutionCode = nodes[0].codeSnippet.replace(/\r\n/g, '\n');
-    }
+    const nodes = r.ok() ? (await r.json()).data?.questionSolutions?.nodes : [];
+    if (nodes?.length) cppSolutionCode = nodes[0].code;
     }
 
-    /* 3‑C. Fallback: parse __NEXT_DATA__ from the Solutions page */
+    /* 3-C. Parse __NEXT_DATA__ from Solutions page */
     if (!cppSolutionCode) {
     console.log('📚 Parsing Solutions page JSON …');
-    const solHtml = await (await page.request.get(
+    const html = await (await page.request.get(
         `https://leetcode.com/problems/${problemSlug}/solutions/?orderBy=most_votes&languageTags=cpp`
-        )).text();
-    const jsonMatch = solHtml.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/);
-    if (jsonMatch) {
-        const nextData = JSON.parse(jsonMatch[1]);
-        const snippets = nextData?.props?.pageProps?.dehydratedState?.queries
-        ?.flatMap(q => q.state?.data?.questionSolutions?.nodes || []);
-        const firstCpp = snippets?.find(n => /#include/.test(n.codeSnippet));
-        if (firstCpp) cppSolutionCode = firstCpp.codeSnippet.replace(/\r\n/g, '\n');
+    )).text();
+    const m = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/);
+    if (m) {
+        const jd = JSON.parse(m[1]);
+        const snippets = [];
+        const walk = o => {
+        if (!o || typeof o !== 'object') return;
+        if ('code' in o && typeof o.code === 'string') snippets.push(o.code);
+        for (const k in o) walk(o[k]);
+        };
+        walk(jd);
+        cppSolutionCode = snippets.find(t => /#include/.test(t));
     }
     }
 
-    /* 3‑D. Last fallback: Discuss */
+    /* 3-D. Fallback: top Discuss post (new selector) */
     if (!cppSolutionCode) {
     console.log('💬 Falling back to Discuss …');
     await page.goto(`https://leetcode.com/problems/${problemSlug}/discuss/?orderBy=most_votes`);
-    await page.waitForSelector('a[data-e2e-locator="post-title"]', { timeout: 12000 });
+    await page.waitForSelector('a[data-e2e-locator="post-item-title"]', { timeout: 15000 });
     await Promise.all([
         page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
-        (await page.$('a[data-e2e-locator="post-title"]')).click()
+        (await page.$('a[data-e2e-locator="post-item-title"]')).click()
     ]);
-    const code = await page.$$eval('pre code', nodes =>
-        nodes.map(n => n.innerText).find(t => /#include/.test(t)));
-    if (code) cppSolutionCode = code;
+    cppSolutionCode = await page.$$eval('pre code', cs =>
+        cs.map(c => c.innerText).find(t => /#include/.test(t))
+    );
     }
 
-    if (!cppSolutionCode) {
-    throw new Error('C++ solution not found in editorial, Solutions tab, or Discuss.');
-    }
+    if (!cppSolutionCode) throw new Error('C++ solution not found.');
     console.log('✅ C++ solution acquired.');
-
-
 
     // 4. Submit the solution via LeetCode API
     const submitUrl = `https://leetcode.com/problems/${problemSlug}/submit/`;
