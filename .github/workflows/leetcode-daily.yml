@@ -30,4 +30,4 @@ jobs:
           npx playwright install
 
       - name: Run LeetCode auto-submit script
-        run: node leetcode_submit.js  # Execute the Node.js script (adjust path if needed)
+        run: node solvify.js  # Execute the Node.js script (adjust path if needed)
