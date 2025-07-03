@@ -1,21 +1,19 @@
-// leetcode_submit.js
+// solvify.js  -- LeetCode Daily Auto-Submit
 const playwright = require('playwright');
 
 (async () => {
-  const LEETCODE_SESSION = process.env.LEETCODE_SESSION;
-  const CSRF_TOKEN = process.env.LEETCODE_CSRF;
+  const { LEETCODE_SESSION, LEETCODE_CSRF: CSRF_TOKEN } = process.env;
   if (!LEETCODE_SESSION || !CSRF_TOKEN) {
-    console.error("LeetCode session cookie or CSRF token not provided. Make sure secrets are set.");
+    console.error('Missing LEETCODE_SESSION or LEETCODE_CSRF secret');
     process.exit(1);
   }
 
-  // 1. Launch headless browser context with LeetCode cookies (to be logged in)
+  /* ───────────────────────── 1. Launch browser (for HTML-only steps) ───────────────────────── */
   const browser = await playwright.chromium.launch({ headless: true });
   const context = await browser.newContext({
-    // Set a realistic user agent (optional, Playwright has a decent default, but we can mimic a common browser)
-    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
+    userAgent:
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   });
-  // Add LeetCode session cookies to context
   await context.addCookies([
     {
       name: 'LEETCODE_SESSION',
@@ -24,7 +22,7 @@ const playwright = require('playwright');
       path: '/',
       httpOnly: true,
       secure: true,
-      sameSite: 'Lax'
+      sameSite: 'Lax',
     },
     {
       name: 'csrftoken',
@@ -33,76 +31,87 @@ const playwright = require('playwright');
       path: '/',
       httpOnly: true,
       secure: true,
-      sameSite: 'Lax'
-    }
+      sameSite: 'Lax',
+    },
   ]);
+  const page = await context.newPage(); // only for editorial HTML scraping
 
-  const page = await context.newPage();
+  /* ───────────────────────── 2. Create an API-only request context (carries cookies) ───────── */
+  const cookieHeader = `LEETCODE_SESSION=${LEETCODE_SESSION}; csrftoken=${CSRF_TOKEN}`;
+  const api = await playwright.request.newContext({
+    baseURL: 'https://leetcode.com',
+    extraHTTPHeaders: {
+      Cookie: cookieHeader,
+      'x-csrftoken': CSRF_TOKEN,
+      Origin: 'https://leetcode.com',
+      Referer: 'https://leetcode.com',
+      'User-Agent':
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    },
+  });
 
   try {
-    // 2. Fetch today's daily challenge info via GraphQL
-    const dailyQuery = `query questionOfToday {
-      activeDailyCodingChallengeQuestion {
-        date
-        link
-        question {
-          titleSlug
-          questionId
-          title
-          hasSolution
+    /* ───────────────────────── 3. Fetch today’s challenge metadata ─────────────────────────── */
+    const dailyQuery = `
+      query questionOfToday {
+        activeDailyCodingChallengeQuestion {
+          date
+          link
+          question { titleSlug questionId title hasSolution }
         }
-      }
-    }`;
-    const response = await page.request.post('https://leetcode.com/graphql', {
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      data: { query: dailyQuery, operationName: "questionOfToday" }
+      }`;
+    const dailyResp = await api.post('/graphql', {
+      data: { query: dailyQuery, operationName: 'questionOfToday' },
     });
-    const data = await response.json();
-    const challenge = data.data.activeDailyCodingChallengeQuestion;
-    if (!challenge) {
-      throw new Error("Could not retrieve daily challenge question.");
-    }
-    const problemSlug = challenge.question.titleSlug;
-    const questionId = challenge.question.questionId;
-    console.log(`🔎 Today's problem: ${challenge.question.title} (slug: ${problemSlug})`);
+    const daily = (await dailyResp.json()).data.activeDailyCodingChallengeQuestion;
+    if (!daily) throw new Error('Could not retrieve daily challenge question.');
 
-        // ---------------- 3️⃣  Fetch an accepted C++ solution ----------------
+    const { titleSlug: problemSlug, questionId, title } = daily.question;
+    console.log(`🔎  Today's problem: ${title}  (slug: ${problemSlug})`);
+
+    /* ───────────────────────── 4. Acquire an accepted C++ solution ─────────────────────────── */
     let cppSolutionCode = null;
 
-    /* 3-A. Official editorial (unchanged) */
+    /* 4-A. Official editorial (HTML) */
     try {
-    const edt = await context.newPage();
-    await edt.goto(`https://leetcode.com/problems/${problemSlug}/solution/`, { waitUntil: 'domcontentloaded' });
-    cppSolutionCode = await edt.$$eval('pre code', cs =>
-        cs.map(c => c.innerText).find(t => /#include/.test(t))
-    );
-    await edt.close();
-    } catch { /* ignore */ }
-
-    /* 3-B. GraphQL questionSolutions (new enum value CPP) */
-    if (!cppSolutionCode) {
-    console.log('🔗 GraphQL: questionSolutions …');
-    const q = `
-        query GetSol($slug:String!){
-        questionSolutions(questionSlug:$slug,first:5,orderBy:most_votes,languageTags:[CPP]){
-            nodes{ code }
-        }
-        }`;
-    const r = await page.request.post('https://leetcode.com/graphql', {
-        headers: { 'Content-Type':'application/json' },
-        data: { query: q, variables:{ slug: problemSlug }, operationName:'GetSol' }
-    });
-    const nodes = r.ok() ? (await r.json()).data?.questionSolutions?.nodes : [];
-    if (nodes?.length) cppSolutionCode = nodes[0].code;
+      const edt = await context.newPage();
+      await edt.goto(`https://leetcode.com/problems/${problemSlug}/solution/`, {
+        waitUntil: 'domcontentloaded',
+      });
+      cppSolutionCode = await edt.$$eval('pre code', (nodes) =>
+        nodes.map((c) => c.innerText).find((t) => /class\s+Solution/.test(t)),
+      );
+      await edt.close();
+    } catch {
+      /* ignore */
     }
 
-    /* 3‑C. Parse __NEXT_DATA__ from Solutions page (hardened) */
+    /* 4-B. GraphQL questionSolutions */
     if (!cppSolutionCode) {
-      console.log('📚 Parsing __NEXT_DATA__ …');
-      const html = await (await page.request.get(
-        `https://leetcode.com/problems/${problemSlug}/solutions/?orderBy=most_votes&languageTags=cpp`
+      console.log('🔗  GraphQL: questionSolutions …');
+      const q = `
+        query GetSol($slug: String!) {
+          questionSolutions(
+            questionSlug: $slug
+            first: 5
+            orderBy: most_votes
+            languageTags: ["cpp"]
+          ) {
+            nodes { code }
+          }
+        }`;
+      const r = await api.post('/graphql', {
+        data: { query: q, variables: { slug: problemSlug }, operationName: 'GetSol' },
+      });
+      const nodes = r.ok() ? (await r.json()).data?.questionSolutions?.nodes : [];
+      if (nodes?.length) cppSolutionCode = nodes[0].code;
+    }
+
+    /* 4-C. Parse __NEXT_DATA__ JSON (always present) */
+    if (!cppSolutionCode) {
+      console.log('📚  Parsing __NEXT_DATA__ …');
+      const html = await (await api.get(
+        `/problems/${problemSlug}/solutions/?orderBy=most_votes&languageTags=cpp`,
       )).text();
       const m = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s);
       if (m) {
@@ -111,78 +120,75 @@ const playwright = require('playwright');
         while (stack.length) {
           const node = stack.pop();
           if (node && typeof node === 'object') {
-            if (typeof node.code === 'string' && /class\s+Solution/.test(node.code))
-              { cppSolutionCode = node.code; break; }
+            if (typeof node.code === 'string' && /class\s+Solution/.test(node.code)) {
+              cppSolutionCode = node.code;
+              break;
+            }
             for (const k in node) stack.push(node[k]);
           }
         }
       }
     }
-    // 4. Submit the solution via LeetCode API
-    const submitUrl = `https://leetcode.com/problems/${problemSlug}/submit/`;
+
+    if (!cppSolutionCode) throw new Error('No C++ solution found.');
+
+    /* ───────────────────────── 5. Submit the solution ──────────────────────────────────────── */
     const submitPayload = {
       question_id: questionId,
-      lang: "cpp",
+      lang: 'cpp',
       typed_code: cppSolutionCode,
-      // other fields as observed: 
       test_mode: false,
-      questionSlug: problemSlug
+      questionSlug: problemSlug,
     };
-    const submitResp = await page.request.post(submitUrl, {
-      headers: {
-        'Content-Type': 'application/json',
-        'x-csrftoken': CSRF_TOKEN,
-        'Referer': `https://leetcode.com/problems/${problemSlug}/`  // referer header for safety
-      },
-      data: submitPayload
+    const submitResp = await api.post(`/problems/${problemSlug}/submit/`, {
+      data: submitPayload,
     });
-    if (!submitResp.ok()) {
-      throw new Error(`Submit request failed with status ${submitResp.status()}`);
-    }
-    const submitResult = await submitResp.json();
-    const submissionId = submitResult.submission_id;
+    const submitText = await submitResp.text();
+    let submitJson = {};
+    try {
+      submitJson = JSON.parse(submitText);
+    } catch {/* ignore malformed */ }
+    const submissionId = submitJson.submission_id;
     if (!submissionId) {
-      throw new Error("Failed to get submission_id from response.");
+      console.error('⛔  Submit reply (no submission_id):', submitText);
+      throw new Error('Failed to get submission_id from response.');
     }
+    console.log(`🚀  Submitted — submission_id: ${submissionId}`);
 
-    // Poll the submission status until done
-    const checkUrl = `https://leetcode.com/submissions/detail/${submissionId}/check/`;
+    /* ───────────────────────── 6. Poll until judged ────────────────────────────────────────── */
+    const checkUrl = `/submissions/detail/${submissionId}/check/`;
     let checkResult, statusMsg;
-    for (let attempt = 0; attempt < 10; attempt++) {  // poll up to ~10 times (with delay)
-      await page.waitForTimeout(2000);  // wait 2 seconds before each check
-      const checkResp = await page.request.post(checkUrl, {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-csrftoken': CSRF_TOKEN
-        }
+    const maxWaitMs = 30_000;
+    for (let waited = 0; waited < maxWaitMs; waited += 2_000) {
+      await new Promise((res) => setTimeout(res, 2_000));
+      const cr = await api.post(checkUrl, {
+        data: {}, // LeetCode expects POST with empty body
       });
-      checkResult = await checkResp.json();
+      checkResult = await cr.json();
       statusMsg = checkResult.status_msg;
-      if (checkResult.state === "SUCCESS" && checkResult.status_code !== 14) { 
-        // status_code 14 = queued, anything else means finished (10=AC, 11=WA, 20=CE, etc.)
-        break;
-      }
+      if (checkResult.state === 'SUCCESS' && checkResult.status_code !== 14) break; // 14=queued
     }
 
-    // 5. Log the outcome
+    /* ───────────────────────── 7. Report outcome ───────────────────────────────────────────── */
     if (checkResult) {
-      console.log(`📝 Submission Result: ${statusMsg || "Unknown"}`);
-      if (statusMsg === "Accepted") {
-        console.log(`💡 Runtime: ${checkResult.status_runtime}, Memory: ${checkResult.status_memory}`);
+      console.log(`📝  Result: ${statusMsg || 'Unknown'}`);
+      if (statusMsg === 'Accepted') {
+        console.log(`   Runtime: ${checkResult.status_runtime}, Memory: ${checkResult.status_memory}`);
       } else if (checkResult.full_compile_error) {
-        console.log(`💡 Compile Error: ${checkResult.full_compile_error}`);
-      } else if (checkResult.status_msg === "Wrong Answer") {
-        console.log(`💡 Last Testcase: ${checkResult.last_testcase}`);
-        console.log(`💡 Expected Output: ${checkResult.expected_output}, Your Output: ${checkResult.code_output}`);
+        console.log(`   Compile Error:\n${checkResult.full_compile_error}`);
+      } else if (statusMsg === 'Wrong Answer') {
+        console.log(`   Last Testcase: ${checkResult.last_testcase}`);
+        console.log(`   Expected: ${checkResult.expected_output}`);
+        console.log(`   Your Out:  ${checkResult.code_output}`);
       }
     } else {
-      console.log("❓ Submission status unknown (no response).");
+      console.log('❓  Submission status unknown.');
     }
-
   } catch (err) {
-    console.error("❌ Error:", err.message);
+    console.error('❌  Error:', err.message);
     process.exitCode = 1;
   } finally {
     await browser.close();
+    await api.dispose();
   }
 })();
