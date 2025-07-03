@@ -8,6 +8,7 @@ on:
 jobs:
   submit-daily-challenge:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     name: Submit LeetCode Daily Challenge
     env:
       # LeetCode session cookies stored as GitHub secrets (set these in repo settings)

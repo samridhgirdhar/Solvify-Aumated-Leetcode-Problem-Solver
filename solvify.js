@@ -98,43 +98,26 @@ const playwright = require('playwright');
     if (nodes?.length) cppSolutionCode = nodes[0].code;
     }
 
-    /* 3-C. Parse __NEXT_DATA__ from Solutions page */
+    /* 3‑C. Parse __NEXT_DATA__ from Solutions page (hardened) */
     if (!cppSolutionCode) {
-    console.log('📚 Parsing Solutions page JSON …');
-    const html = await (await page.request.get(
+      console.log('📚 Parsing __NEXT_DATA__ …');
+      const html = await (await page.request.get(
         `https://leetcode.com/problems/${problemSlug}/solutions/?orderBy=most_votes&languageTags=cpp`
-    )).text();
-    const m = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/);
-    if (m) {
+      )).text();
+      const m = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s);
+      if (m) {
         const jd = JSON.parse(m[1]);
-        const snippets = [];
-        const walk = o => {
-        if (!o || typeof o !== 'object') return;
-        if ('code' in o && typeof o.code === 'string') snippets.push(o.code);
-        for (const k in o) walk(o[k]);
-        };
-        walk(jd);
-        cppSolutionCode = snippets.find(t => /#include/.test(t));
+        const stack = [jd];
+        while (stack.length) {
+          const node = stack.pop();
+          if (node && typeof node === 'object') {
+            if (typeof node.code === 'string' && /class\s+Solution/.test(node.code))
+              { cppSolutionCode = node.code; break; }
+            for (const k in node) stack.push(node[k]);
+          }
+        }
+      }
     }
-    }
-
-    /* 3-D. Fallback: top Discuss post (new selector) */
-    if (!cppSolutionCode) {
-    console.log('💬 Falling back to Discuss …');
-    await page.goto(`https://leetcode.com/problems/${problemSlug}/discuss/?orderBy=most_votes`);
-    await page.waitForSelector('a[data-e2e-locator="post-item-title"]', { timeout: 15000 });
-    await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
-        (await page.$('a[data-e2e-locator="post-item-title"]')).click()
-    ]);
-    cppSolutionCode = await page.$$eval('pre code', cs =>
-        cs.map(c => c.innerText).find(t => /#include/.test(t))
-    );
-    }
-
-    if (!cppSolutionCode) throw new Error('C++ solution not found.');
-    console.log('✅ C++ solution acquired.');
-
     // 4. Submit the solution via LeetCode API
     const submitUrl = `https://leetcode.com/problems/${problemSlug}/submit/`;
     const submitPayload = {
