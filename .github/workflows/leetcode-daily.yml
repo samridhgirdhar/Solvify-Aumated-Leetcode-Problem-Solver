@@ -2,7 +2,7 @@ name: LeetCode Daily Auto-Submit
 
 on:
   schedule:
-    - cron: "5 0 * * *"   # Run daily at 00:05 UTC (adjust as needed)
+    # - cron: "5 0 * * *"   # Run daily at 00:05 UTC (adjust as needed)
   workflow_dispatch:
 
 jobs:
